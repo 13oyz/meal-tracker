@@ -7,7 +7,7 @@ import re
 import time
 
 # --- นำ URL Web App จาก Google Apps Script (ลงท้ายด้วย /exec) มาวางตรงนี้ ---
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/ใส่_URL_APPS_SCRIPT_ของคุณตรงนี้/exec"
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzl_SLzqcTmWCLtDFtyIBKRS4m8LYOOoAozlIwqKp-ArKHCIw0IvfgM0HYvZXVI28vjZA/exec"
 
 st.set_page_config(page_title="Meal Tracker + BMR/TDEE", page_icon="🍚", layout="wide")
 
