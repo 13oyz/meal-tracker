@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 import re
 import time
 
-# --- นำ URL Web App จาก Google Apps Script (ลงท้ายด้วย /exec) มาวางตรงนี้ ---
+# --- Google Apps Script Web App URL ---
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzl_SLzqcTmWCLtDFtyIBKRS4m8LYOOoAozlIwqKp-ArKHCIw0IvfgM0HYvZXVI28vjZA/exec"
 
 st.set_page_config(page_title="Meal Tracker + BMR/TDEE", page_icon="🍚", layout="wide")
@@ -30,11 +30,10 @@ def load_data():
     return pd.DataFrame(columns=["วันที่", "มื้ออาหาร", "รายการอาหาร", "คาร์บ (g)", "โปรตีน (g)", "ไขมัน (g)", "แคลอรี (kcal)"])
 
 def append_entry(meal, item, weight, carbs, protein, fat, calories):
-    # บันทึกวันที่ตามเวลาประเทศไทย (Asia/Bangkok)
-    bkk_date_str = pd.Timestamp.now(tz="Asia/Bangkok").strftime("%Y-%m-%d")
+    bkk_now_str = pd.Timestamp.now(tz="Asia/Bangkok").strftime("%Y-%m-%d %H:%M")
     payload = {
         "action": "append",
-        "date": bkk_date_str,
+        "date": bkk_now_str,
         "meal": meal,
         "item": f"{item} ({weight}g)",
         "carbs": float(carbs),
@@ -172,7 +171,7 @@ with tab1:
             
             if st.form_submit_button("บันทึกลง Google Sheets"):
                 append_entry(meal_type, food_name, weight, calc_c, calc_p, calc_f, calc_cal)
-                time.sleep(1)  # รอ Apps Script บันทึกข้อมูล
+                time.sleep(1)
                 st.rerun()
 
 with tab2:
@@ -188,12 +187,11 @@ with tab2:
     else:
         st.dataframe(df, use_container_width=True)
 
-# --- สรุปภาพรวมประจำวันเทียบเป้าหมาย (รองรับ Timezone ไทย) ---
+# --- สรุปภาพรวมประจำวันเทียบเป้าหมาย ---
 st.divider()
 st.subheader("📊 สรุปภาพรวมประจำวันเทียบเป้าหมาย")
 
 if not df.empty and len(df) > 0 and "วันที่" in df.columns:
-    # 1. แปลงคอลัมน์วันที่และปรับ Timezone เป็นเวลาไทย
     dates_dt = pd.to_datetime(df["วันที่"], errors="coerce")
     if dates_dt.dt.tz is not None:
         dates_bkk = dates_dt.dt.tz_convert("Asia/Bangkok")
@@ -201,8 +199,8 @@ if not df.empty and len(df) > 0 and "วันที่" in df.columns:
         dates_bkk = dates_dt.dt.tz_localize("UTC", ambiguous='NaT', nonexistent='NaT').dt.tz_convert("Asia/Bangkok")
         
     df["clean_date"] = dates_bkk.dt.strftime("%Y-%m-%d")
+    df["เวลา"] = dates_bkk.dt.strftime("%H:%M น.")
     
-    # 2. หาวันที่ปัจจุบันตามเวลาไทย (Asia/Bangkok)
     today_bkk = pd.Timestamp.now(tz="Asia/Bangkok").strftime("%Y-%m-%d")
     today_df = df[df["clean_date"] == today_bkk]
     
@@ -211,16 +209,19 @@ if not df.empty and len(df) > 0 and "วันที่" in df.columns:
         t_c = today_df["คาร์บ (g)"].sum()
         t_p = today_df["โปรตีน (g)"].sum()
         t_f = today_df["ไขมัน (g)"].sum()
-        diff = t_cal - target_calories
         
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("พลังงานรวมวันนี้", f"{t_cal:.0f} kcal", f"{diff:+.0f} จากเป้าหมาย {target_calories} kcal")
-        c2.metric("คาร์บรวม", f"{t_c:.1f} g")
-        c3.metric("โปรตีนรวม", f"{t_p:.1f} g")
-        c4.metric("ไขมันรวม", f"{t_f:.1f} g")
+        remaining_cal = target_calories - t_cal
+        
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("กินไปแล้ววันนี้", f"{t_cal:.0f} kcal")
+        c2.metric("ยังกินได้อีก (คงเหลือ)", f"{remaining_cal:.0f} kcal", f"เป้าหมาย {target_calories} kcal")
+        c3.metric("คาร์บรวม", f"{t_c:.1f} g")
+        c4.metric("โปรตีนรวม", f"{t_p:.1f} g")
+        c5.metric("ไขมันรวม", f"{t_f:.1f} g")
         
         st.write("📋 **รายการอาหารที่กินไปแล้ววันนี้:**")
-        show_cols = [col for col in ["มื้ออาหาร", "รายการอาหาร", "คาร์บ (g)", "โปรตีน (g)", "ไขมัน (g)", "แคลอรี (kcal)"] if col in today_df.columns]
+        cols_order = ["เวลา", "มื้ออาหาร", "รายการอาหาร", "คาร์บ (g)", "โปรตีน (g)", "ไขมัน (g)", "แคลอรี (kcal)"]
+        show_cols = [c for c in cols_order if c in today_df.columns]
         st.dataframe(today_df[show_cols], use_container_width=True)
     else:
         st.write(f"ยังไม่มีรายการอาหารที่บันทึกสำหรับวันที่วันนี้ ({today_bkk})")
