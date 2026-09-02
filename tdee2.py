@@ -4,38 +4,39 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import date
 import re
-from streamlit_gsheets import GSheetsConnection
+
+# วาง URL ที่ได้จากการ Deploy Web App ของ Apps Script ที่นี่
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzl_SLzqcTmWCLtDFtyIBKRS4m8LYOOoAozlIwqKp-ArKHCIw0IvfgM0HYvZXVI28vjZA/exec"
 
 st.set_page_config(page_title="Meal Tracker + BMR/TDEE", page_icon="🍚", layout="wide")
 
-# --- สร้างการเชื่อมต่อ Google Sheets ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-
+# --- ฟังก์ชันจัดการข้อมูลผ่าน Google Sheets Webhook ---
 def load_data():
     try:
-        # ดึงข้อมูลจากแท็บ Daily_Log โดยไม่แคช (ttl=0 เพื่อให้ได้ข้อมูลล่าสุดเสมอ)
-        df = conn.read(worksheet="Daily_Log", ttl=0)
-        return df.dropna(how="all")
+        res = requests.get(APPS_SCRIPT_URL, timeout=8)
+        if res.status_code == 200:
+            data = res.json()
+            if data:
+                return pd.DataFrame(data)
     except Exception:
-        return pd.DataFrame(columns=["วันที่", "มื้ออาหาร", "รายการอาหาร", "คาร์บ (g)", "โปรตีน (g)", "ไขมัน (g)", "แคลอรี (kcal)"])
-
-def save_all_data(df):
-    # อัปเดตข้อมูลกลับไปยัง Google Sheets
-    conn.update(worksheet="Daily_Log", data=df)
+        pass
+    return pd.DataFrame(columns=["วันที่", "มื้ออาหาร", "รายการอาหาร", "คาร์บ (g)", "โปรตีน (g)", "ไขมัน (g)", "แคลอรี (kcal)"])
 
 def append_entry(meal, item, weight, carbs, protein, fat, calories):
-    df = load_data()
-    new_entry = pd.DataFrame([{
-        "วันที่": str(date.today()),
-        "มื้ออาหาร": meal,
-        "รายการอาหาร": f"{item} ({weight}g)",
-        "คาร์บ (g)": float(carbs),
-        "โปรตีน (g)": float(protein),
-        "ไขมัน (g)": float(fat),
-        "แคลอรี (kcal)": float(calories)
-    }])
-    updated_df = pd.concat([df, new_entry], ignore_index=True)
-    save_all_data(updated_df)
+    payload = {
+        "action": "append",
+        "date": str(date.today()),
+        "meal": meal,
+        "item": f"{item} ({weight}g)",
+        "carbs": float(carbs),
+        "protein": float(protein),
+        "fat": float(fat),
+        "calories": float(calories)
+    }
+    try:
+        requests.post(APPS_SCRIPT_URL, json=payload, timeout=8)
+    except Exception as e:
+        st.error(f"ไม่สามารถบันทึกข้อมูลได้: {e}")
 
 # --- ฟังก์ชันดึงข้อมูลจาก CALFORLIFE ---
 @st.cache_data(ttl=3600)
@@ -107,9 +108,9 @@ with st.sidebar:
     st.success(f"🎯 **เป้าหมาย: {target_calories} kcal/วัน**")
 
 # --- หน้าระบบหลัก ---
-st.title("🍚 บันทึกโภชนาการ (ฐานข้อมูล Google Sheets)")
+st.title("🍚 บันทึกโภชนาการ (Google Sheets Sync)")
 
-tab1, tab2 = st.tabs(["➕ บันทึกอาหารใหม่", "⚙️ จัดการ / แก้ไข / ลบข้อมูล"])
+tab1, tab2 = st.tabs(["➕ บันทึกอาหารใหม่", "📊 ข้อมูลที่บันทึกไว้"])
 
 with tab1:
     col_left, col_right = st.columns([1, 1])
@@ -158,48 +159,12 @@ with tab1:
                 st.rerun()
 
 with tab2:
-    st.subheader("จัดการรายการใน Google Sheets")
+    st.subheader("รายการที่บันทึกไว้ใน Google Sheets")
     df = load_data()
-    
     if df.empty or len(df) == 0:
         st.info("ยังไม่มีข้อมูลในชีต")
     else:
         st.dataframe(df, use_container_width=True)
-        col_opt1, col_opt2 = st.columns(2)
-
-        with col_opt1:
-            st.markdown("### ✏️ แก้ไขข้อมูล")
-            row_to_edit = st.selectbox("เลือกแถว (Index) ที่ต้องการแก้ไข", df.index.tolist(), key="edit_selector")
-            current_row = df.loc[row_to_edit]
-
-            with st.form("edit_form"):
-                new_date = st.text_input("วันที่", value=str(current_row["วันที่"]))
-                meal_options = ["มื้อเช้า", "มื้อกลางวัน", "มื้อเย็น", "ก่อนนอน"]
-                current_meal_idx = meal_options.index(current_row["มื้ออาหาร"]) if current_row["มื้ออาหาร"] in meal_options else 0
-                new_meal = st.selectbox("มื้ออาหาร", meal_options, index=current_meal_idx)
-                new_item = st.text_input("รายการอาหาร", value=str(current_row["รายการอาหาร"]))
-                new_c = st.number_input("คาร์บ (g)", value=float(current_row["คาร์บ (g)"]), step=1.0)
-                new_p = st.number_input("โปรตีน (g)", value=float(current_row["โปรตีน (g)"]), step=1.0)
-                new_f = st.number_input("ไขมัน (g)", value=float(current_row["ไขมัน (g)"]), step=1.0)
-                new_cal = st.number_input("แคลอรี (kcal)", value=float(current_row["แคลอรี (kcal)"]), step=1.0)
-
-                if st.form_submit_button("บันทึกการแก้ไขไปยัง Google Sheets"):
-                    df.loc[row_to_edit] = [new_date, new_meal, new_item, new_c, new_p, new_f, new_cal]
-                    save_all_data(df)
-                    st.success("อัปเดตข้อมูลเรียบร้อยแล้ว!")
-                    st.rerun()
-
-        with col_opt2:
-            st.markdown("### 🗑️ ลบข้อมูล")
-            row_to_delete = st.selectbox("เลือกแถว (Index) ที่ต้องการลบ", df.index.tolist(), key="del_selector")
-            target_entry = df.loc[row_to_delete]
-            st.write(f"รายการที่เลือก: **{target_entry['มื้ออาหาร']} - {target_entry['รายการอาหาร']}**")
-
-            if st.button("ยืนยันการลบรายการนี้", type="primary"):
-                df = df.drop(index=row_to_delete).reset_index(drop=True)
-                save_all_data(df)
-                st.success("ลบรายการออกจาก Google Sheets เรียบร้อยแล้ว!")
-                st.rerun()
 
 # --- สรุปภาพรวมประจำวัน ---
 st.divider()
@@ -207,12 +172,12 @@ st.subheader("📊 สรุปภาพรวมประจำวันเท�
 df = load_data()
 if not df.empty and len(df) > 0:
     today_str = str(date.today())
-    today_df = df[df["วันที่"] == today_str]
+    today_df = df[df["วันที่"].astype(str).str.startswith(today_str)]
     if not today_df.empty:
-        t_cal = pd.to_numeric(today_df["แคลอรี (kcal)"]).sum()
-        t_c = pd.to_numeric(today_df["คาร์บ (g)"]).sum()
-        t_p = pd.to_numeric(today_df["โปรตีน (g)"]).sum()
-        t_f = pd.to_numeric(today_df["ไขมัน (g)"]).sum()
+        t_cal = pd.to_numeric(today_df["แคลอรี (kcal)"], errors="coerce").fillna(0).sum()
+        t_c = pd.to_numeric(today_df["คาร์บ (g)"], errors="coerce").fillna(0).sum()
+        t_p = pd.to_numeric(today_df["โปรตีน (g)"], errors="coerce").fillna(0).sum()
+        t_f = pd.to_numeric(today_df["ไขมัน (g)"], errors="coerce").fillna(0).sum()
         
         diff = t_cal - target_calories
         
