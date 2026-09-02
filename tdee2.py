@@ -5,21 +5,28 @@ from bs4 import BeautifulSoup
 from datetime import date
 import re
 
-# วาง URL ที่ได้จากการ Deploy Web App ของ Apps Script ที่นี่
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzl_SLzqcTmWCLtDFtyIBKRS4m8LYOOoAozlIwqKp-ArKHCIw0IvfgM0HYvZXVI28vjZA/exec"
+# ระบุ URL Apps Script ของคุณ
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/ใส่_ID_URL_ของคุณตรงนี้/exec"
 
 st.set_page_config(page_title="Meal Tracker + BMR/TDEE", page_icon="🍚", layout="wide")
 
-# --- ฟังก์ชันจัดการข้อมูลผ่าน Google Sheets Webhook ---
+# --- ฟังก์ชันโหลดข้อมูลจาก Google Sheets ---
 def load_data():
     try:
-        res = requests.get(APPS_SCRIPT_URL, timeout=8)
+        # ใส่พารามิเตอร์กันแคชเพื่อให้ได้ข้อมูลล่าสุดเสมอ
+        res = requests.get(f"{APPS_SCRIPT_URL}?t={pd.Timestamp.now().timestamp()}", timeout=10)
         if res.status_code == 200:
             data = res.json()
-            if data:
-                return pd.DataFrame(data)
-    except Exception:
-        pass
+            if data and isinstance(data, list):
+                df = pd.DataFrame(data)
+                # แปลงคอลัมน์ตัวเลขให้พร้อมคำนวณ
+                num_cols = ["คาร์บ (g)", "โปรตีน (g)", "ไขมัน (g)", "แคลอรี (kcal)"]
+                for col in num_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+                return df
+    except Exception as e:
+        st.warning(f"เชื่อมต่อฐานข้อมูลชีตไม่สำเร็จ: {e}")
     return pd.DataFrame(columns=["วันที่", "มื้ออาหาร", "รายการอาหาร", "คาร์บ (g)", "โปรตีน (g)", "ไขมัน (g)", "แคลอรี (kcal)"])
 
 def append_entry(meal, item, weight, carbs, protein, fat, calories):
@@ -34,9 +41,13 @@ def append_entry(meal, item, weight, carbs, protein, fat, calories):
         "calories": float(calories)
     }
     try:
-        requests.post(APPS_SCRIPT_URL, json=payload, timeout=8)
+        res = requests.post(APPS_SCRIPT_URL, json=payload, timeout=10)
+        if res.status_code == 200:
+            st.success(f"บันทึกข้อมูลเรียบร้อย: {item}")
+        else:
+            st.error("บันทึกไม่สำเร็จ ตรวจสอบสิทธิ์ Apps Script")
     except Exception as e:
-        st.error(f"ไม่สามารถบันทึกข้อมูลได้: {e}")
+        st.error(f"ไม่สามารถส่งข้อมูลได้: {e}")
 
 # --- ฟังก์ชันดึงข้อมูลจาก CALFORLIFE ---
 @st.cache_data(ttl=3600)
@@ -110,7 +121,10 @@ with st.sidebar:
 # --- หน้าระบบหลัก ---
 st.title("🍚 บันทึกโภชนาการ (Google Sheets Sync)")
 
-tab1, tab2 = st.tabs(["➕ บันทึกอาหารใหม่", "📊 ข้อมูลที่บันทึกไว้"])
+# โหลดข้อมูลชีตมาเก็บไว้
+df = load_data()
+
+tab1, tab2 = st.tabs(["➕ บันทึกอาหารใหม่", "📊 ข้อมูลที่บันทึกไว้ในชีต"])
 
 with tab1:
     col_left, col_right = st.columns([1, 1])
@@ -155,30 +169,37 @@ with tab1:
             
             if st.form_submit_button("บันทึกลง Google Sheets"):
                 append_entry(meal_type, food_name, weight, calc_c, calc_p, calc_f, calc_cal)
-                st.success(f"บันทึกสำเร็จ: {food_name} ({weight}g)")
                 st.rerun()
 
 with tab2:
-    st.subheader("รายการที่บันทึกไว้ใน Google Sheets")
-    df = load_data()
+    col_tab2_title, col_tab2_btn = st.columns([4, 1])
+    with col_tab2_title:
+        st.subheader("รายการทั้งหมดจากชีต")
+    with col_tab2_btn:
+        if st.button("🔄 โหลดข้อมูลชีตใหม่"):
+            st.rerun()
+            
     if df.empty or len(df) == 0:
-        st.info("ยังไม่มีข้อมูลในชีต")
+        st.info("ยังไม่พบข้อมูลจาก Google Sheets (กรุณาตรวจสอบว่ามีข้อมูลในชีตและสิทธิ์ Web app เป็น Anyone หรือยัง)")
     else:
         st.dataframe(df, use_container_width=True)
 
 # --- สรุปภาพรวมประจำวัน ---
 st.divider()
 st.subheader("📊 สรุปภาพรวมประจำวันเทียบเป้าหมาย")
-df = load_data()
-if not df.empty and len(df) > 0:
+
+if not df.empty and len(df) > 0 and "วันที่" in df.columns:
     today_str = str(date.today())
-    today_df = df[df["วันที่"].astype(str).str.startswith(today_str)]
+    
+    # แปลงคอลัมน์วันที่เป็น String และตัดเอาเฉพาะส่วน YYYY-MM-DD เพื่อความแม่นยำ
+    df["date_only"] = df["วันที่"].astype(str).str.slice(0, 10)
+    today_df = df[df["date_only"] == today_str]
+    
     if not today_df.empty:
-        t_cal = pd.to_numeric(today_df["แคลอรี (kcal)"], errors="coerce").fillna(0).sum()
-        t_c = pd.to_numeric(today_df["คาร์บ (g)"], errors="coerce").fillna(0).sum()
-        t_p = pd.to_numeric(today_df["โปรตีน (g)"], errors="coerce").fillna(0).sum()
-        t_f = pd.to_numeric(today_df["ไขมัน (g)"], errors="coerce").fillna(0).sum()
-        
+        t_cal = today_df["แคลอรี (kcal)"].sum()
+        t_c = today_df["คาร์บ (g)"].sum()
+        t_p = today_df["โปรตีน (g)"].sum()
+        t_f = today_df["ไขมัน (g)"].sum()
         diff = t_cal - target_calories
         
         c1, c2, c3, c4 = st.columns(4)
@@ -186,5 +207,13 @@ if not df.empty and len(df) > 0:
         c2.metric("คาร์บรวม", f"{t_c:.1f} g")
         c3.metric("โปรตีนรวม", f"{t_p:.1f} g")
         c4.metric("ไขมันรวม", f"{t_f:.1f} g")
+        
+        st.write("รายการอาหารที่กินไปแล้ววันนี้:")
+        st.dataframe(today_df[["มื้ออาหาร", "รายการอาหาร", "คาร์บ (g)", "โปรตีน (g)", "ไขมัน (g)", "แคลอรี (kcal)"]], use_container_width=True)
     else:
-        st.write("ยังไม่มีรายการอาหารที่บันทึกสำหรับวันนี้")
+        st.write(f"ยังไม่มีรายการอาหารที่ตรงกับวันที่วันนี้ ({today_str})")
+        # แสดงตารางข้อมูลล่าสุดให้เห็นทันที ไม่ปล่อยให้ว่าง
+        st.caption("ข้อมูล 5 รายการล่าสุดในชีต:")
+        st.dataframe(df.tail(5), use_container_width=True)
+else:
+    st.write("ยังไม่มีข้อมูลจากฐานข้อมูลชีต")
