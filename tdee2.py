@@ -76,7 +76,63 @@ def fetch_nutrition_from_calforlife(food_slug):
     except Exception:
         return None
 
-# --- เมนูด้านข้าง (SIDEBAR): คำนวณ BMR & TDEE ---
+# --- ฟังก์ชันดึงข้อมูลจาก OPEN FOOD FACTS API ---
+@st.cache_data(ttl=3600)
+def fetch_nutrition_from_openfoodfacts(query):
+    query = query.strip()
+    headers = {"User-Agent": "MealTrackerApp - Streamlit - Version1.0"}
+    try:
+        # กรณีค้นหาด้วย Barcode (ตัวเลขล้วน)
+        if query.isdigit():
+            url = f"https://world.openfoodfacts.org/api/v0/product/{query}.json"
+            res = requests.get(url, headers=headers, timeout=6)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("status") == 1:
+                    product = data.get("product", {})
+                    nutriments = product.get("nutriments", {})
+                    name = product.get("product_name_th") or product.get("product_name") or query
+                    cal = nutriments.get("energy-kcal_100g") or nutriments.get("energy-kcal") or 0.0
+                    c = nutriments.get("carbohydrates_100g") or 0.0
+                    p = nutriments.get("proteins_100g") or 0.0
+                    f = nutriments.get("fat_100g") or 0.0
+                    return [{"name": name, "calories": float(cal), "carbs": float(c), "protein": float(p), "fat": float(f)}]
+        else:
+            # กรณีค้นหาด้วยชื่อสินค้า
+            url = "https://world.openfoodfacts.org/cgi/search.pl"
+            params = {
+                "search_terms": query,
+                "search_simple": 1,
+                "action": "process",
+                "json": 1,
+                "page_size": 5
+            }
+            res = requests.get(url, params=params, headers=headers, timeout=8)
+            if res.status_code == 200:
+                data = res.json()
+                products = data.get("products", [])
+                results = []
+                for p in products:
+                    name = p.get("product_name_th") or p.get("product_name") or p.get("brands") or "ไม่ทราบชื่อ"
+                    nutriments = p.get("nutriments", {})
+                    cal = nutriments.get("energy-kcal_100g") or nutriments.get("energy-kcal") or 0.0
+                    c = nutriments.get("carbohydrates_100g") or 0.0
+                    prot = nutriments.get("proteins_100g") or 0.0
+                    fat = nutriments.get("fat_100g") or 0.0
+                    if cal > 0 or prot > 0 or c > 0:
+                        results.append({
+                            "name": name,
+                            "calories": float(cal),
+                            "carbs": float(c),
+                            "protein": float(prot),
+                            "fat": float(fat)
+                        })
+                return results
+    except Exception:
+        pass
+    return None
+
+# --- SIDEBAR: คำนวณ BMR & TDEE ---
 with st.sidebar:
     st.header("⚙️ คำนวณ BMR / TDEE")
     gender = st.radio("เพศ", ["ชาย", "หญิง"], horizontal=True)
@@ -122,7 +178,6 @@ with st.sidebar:
 # --- หน้าต่างหลัก ---
 st.title("🍚 บันทึกโภชนาการ (Google Sheets Sync)")
 
-# โหลดข้อมูลสดจาก Google Sheets
 df = load_data()
 
 tab1, tab2 = st.tabs(["➕ บันทึกอาหารใหม่", "📊 รายการทั้งหมดในชีต"])
@@ -130,36 +185,65 @@ tab1, tab2 = st.tabs(["➕ บันทึกอาหารใหม่", "📊
 with tab1:
     col_left, col_right = st.columns([1, 1])
     
-    with col_left:
-        st.subheader("1. ค้นหาคุณค่าอาหาร (CalForLife)")
-        default_foods = {
-            "ข้าวสวยสุก (Rice)": {"path": "riec", "c": 28.2, "p": 2.7, "f": 0.3, "cal": 130.0},
-            "ข้าวกล้องสุก": {"path": "brown-rice", "c": 23.5, "p": 2.6, "f": 0.9, "cal": 112.0},
-            "อกไก่สุก (ลอกหนัง)": {"path": "chicken-breast", "c": 0.0, "p": 31.0, "f": 3.6, "cal": 165.0},
-            "ปลาแซลมอนย่าง": {"path": "salmon", "c": 0.0, "p": 22.0, "f": 12.0, "cal": 200.0},
-        }
-        selected_item = st.selectbox("เลือกรายการยอดนิยม", list(default_foods.keys()))
-        custom_slug = st.text_input("หรือระบุ Path CalForLife (เช่น riec)", value=default_foods[selected_item]["path"])
-        
-        c_100 = default_foods[selected_item]["c"]
-        p_100 = default_foods[selected_item]["p"]
-        f_100 = default_foods[selected_item]["f"]
-        cal_100 = default_foods[selected_item]["cal"]
+    # กำหนดค่าเริ่มต้นสารอาหารต่อ 100g
+    c_100, p_100, f_100, cal_100 = 0.0, 0.0, 0.0, 0.0
+    suggested_name = ""
 
-        if st.button("🔄 ดึงข้อมูลสดจาก CalForLife"):
-            res = fetch_nutrition_from_calforlife(custom_slug)
-            if res and (res["calories"] > 0 or res["carbs"] > 0):
-                c_100, p_100, f_100, cal_100 = res["carbs"], res["protein"], res["fat"], res["calories"]
-                st.success(f"ดึงข้อมูลสำเร็จ (ต่อ 100g): คาร์บ {c_100}g | โปรตีน {p_100}g | ไขมัน {f_100}g | {cal_100} kcal")
-            else:
-                st.warning("ไม่สามารถดึงข้อมูลสดได้ ใช้ค่ามาตรฐานสำรองแทน")
+    with col_left:
+        st.subheader("1. ค้นหาคุณค่าอาหาร")
+        source = st.radio("เลือกแหล่งข้อมูล", ["เมนูยอดนิยม / CalForLife", "Open Food Facts (นม/ของ 7-11/บาร์โค้ด)"], horizontal=True)
+        
+        if source == "เมนูยอดนิยม / CalForLife":
+            default_foods = {
+                "ข้าวสวยสุก (Rice)": {"path": "riec", "c": 28.2, "p": 2.7, "f": 0.3, "cal": 130.0},
+                "ข้าวกล้องสุก": {"path": "brown-rice", "c": 23.5, "p": 2.6, "f": 0.9, "cal": 112.0},
+                "อกไก่สุก (ลอกหนัง)": {"path": "chicken-breast", "c": 0.0, "p": 31.0, "f": 3.6, "cal": 165.0},
+                "ปลาแซลมอนย่าง": {"path": "salmon", "c": 0.0, "p": 22.0, "f": 12.0, "cal": 200.0},
+            }
+            selected_item = st.selectbox("เลือกรายการยอดนิยม", list(default_foods.keys()))
+            custom_slug = st.text_input("หรือระบุ Path CalForLife (เช่น riec, fried-egg)", value=default_foods[selected_item]["path"])
+            
+            c_100 = default_foods[selected_item]["c"]
+            p_100 = default_foods[selected_item]["p"]
+            f_100 = default_foods[selected_item]["f"]
+            cal_100 = default_foods[selected_item]["cal"]
+            suggested_name = selected_item
+
+            if st.button("🔄 ดึงข้อมูลสดจาก CalForLife"):
+                res = fetch_nutrition_from_calforlife(custom_slug)
+                if res and (res["calories"] > 0 or res["carbs"] > 0):
+                    c_100, p_100, f_100, cal_100 = res["carbs"], res["protein"], res["fat"], res["calories"]
+                    st.success(f"พบข้อมูล (ต่อ 100g): คาร์บ {c_100}g | โปรตีน {p_100}g | ไขมัน {f_100}g | {cal_100} kcal")
+                else:
+                    st.warning("ไม่สามารถดึงข้อมูลสดได้ ใช้ค่ามาตรฐานสำรองแทน")
+                    
+        else:
+            # ค้นหาผ่าน Open Food Facts
+            off_query = st.text_input("พิมพ์ชื่อสินค้า หรือเลขบาร์โค้ด (เช่น meiji protein, dutch mill, tofu san, นมสด)", value="meiji protein")
+            if st.button("🔍 ค้นหา Open Food Facts"):
+                off_results = fetch_nutrition_from_openfoodfacts(off_query)
+                if off_results:
+                    st.session_state["off_results"] = off_results
+                else:
+                    st.warning("ไม่พบสินค้าใน Open Food Facts")
+
+            if "off_results" in st.session_state and st.session_state["off_results"]:
+                options = {f"{item['name']} ({item['calories']:.0f} kcal / 100g)": item for item in st.session_state["off_results"]}
+                chosen_label = st.selectbox("เลือกสินค้าที่ตรงกัน:", list(options.keys()))
+                chosen_item = options[chosen_label]
+                suggested_name = chosen_item["name"]
+                c_100 = chosen_item["carbs"]
+                p_100 = chosen_item["protein"]
+                f_100 = chosen_item["fat"]
+                cal_100 = chosen_item["calories"]
+                st.info(f"คุณค่าต่อ 100g: คาร์บ {c_100}g | โปรตีน {p_100}g | ไขมัน {f_100}g | {cal_100} kcal")
 
     with col_right:
         st.subheader("2. คำนวณตามน้ำหนักและบันทึก")
         with st.form("add_meal_form", clear_on_submit=True):
             meal_type = st.selectbox("มื้ออาหาร", ["มื้อเช้า", "มื้อกลางวัน", "มื้อเย็น", "ก่อนนอน"])
-            food_name = st.text_input("ชื่ออาหาร", value=selected_item)
-            weight = st.number_input("น้ำหนักอาหาร (กรัม)", min_value=1.0, value=150.0, step=10.0)
+            food_name = st.text_input("ชื่ออาหาร", value=suggested_name)
+            weight = st.number_input("ปริมาณอาหาร/เครื่องดื่ม (กรัม หรือ มล.)", min_value=1.0, value=150.0, step=10.0)
 
             ratio = weight / 100.0
             calc_c = round(c_100 * ratio, 1)
