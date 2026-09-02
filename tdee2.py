@@ -82,7 +82,6 @@ def fetch_nutrition_from_openfoodfacts(query):
     query = query.strip()
     headers = {"User-Agent": "MealTrackerApp - Streamlit - Version1.0"}
     try:
-        # กรณีค้นหาด้วย Barcode (ตัวเลขล้วน)
         if query.isdigit():
             url = f"https://world.openfoodfacts.org/api/v0/product/{query}.json"
             res = requests.get(url, headers=headers, timeout=6)
@@ -98,7 +97,6 @@ def fetch_nutrition_from_openfoodfacts(query):
                     f = nutriments.get("fat_100g") or 0.0
                     return [{"name": name, "calories": float(cal), "carbs": float(c), "protein": float(p), "fat": float(f)}]
         else:
-            # กรณีค้นหาด้วยชื่อสินค้า
             url = "https://world.openfoodfacts.org/cgi/search.pl"
             params = {
                 "search_terms": query,
@@ -182,12 +180,20 @@ df = load_data()
 
 tab1, tab2 = st.tabs(["➕ บันทึกอาหารใหม่", "📊 รายการทั้งหมดในชีต"])
 
+# กำหนด Session State เริ่มต้นสำหรับจัดเก็บอาหารที่เลือก
+if "food_name" not in st.session_state:
+    st.session_state["food_name"] = "ข้าวสวยสุก (Rice)"
+if "c_100" not in st.session_state:
+    st.session_state["c_100"] = 28.2
+if "p_100" not in st.session_state:
+    st.session_state["p_100"] = 2.7
+if "f_100" not in st.session_state:
+    st.session_state["f_100"] = 0.3
+if "cal_100" not in st.session_state:
+    st.session_state["cal_100"] = 130.0
+
 with tab1:
     col_left, col_right = st.columns([1, 1])
-    
-    # กำหนดค่าเริ่มต้นสารอาหารต่อ 100g
-    c_100, p_100, f_100, cal_100 = 0.0, 0.0, 0.0, 0.0
-    suggested_name = ""
 
     with col_left:
         st.subheader("1. ค้นหาคุณค่าอาหาร")
@@ -198,52 +204,77 @@ with tab1:
                 "ข้าวสวยสุก (Rice)": {"path": "riec", "c": 28.2, "p": 2.7, "f": 0.3, "cal": 130.0},
                 "ข้าวกล้องสุก": {"path": "brown-rice", "c": 23.5, "p": 2.6, "f": 0.9, "cal": 112.0},
                 "อกไก่สุก (ลอกหนัง)": {"path": "chicken-breast", "c": 0.0, "p": 31.0, "f": 3.6, "cal": 165.0},
+                "ไข่ต้ม (1 ฟอง ~50g)": {"path": "boiled-egg", "c": 0.6, "p": 6.3, "f": 5.3, "cal": 77.0},
+                "ไข่ดาว (1 ฟอง)": {"path": "fried-egg", "c": 0.4, "p": 6.3, "f": 14.8, "cal": 160.0},
                 "ปลาแซลมอนย่าง": {"path": "salmon", "c": 0.0, "p": 22.0, "f": 12.0, "cal": 200.0},
+                "กำหนดเอง / ระบุ Path เอง": {"path": "", "c": 0.0, "p": 0.0, "f": 0.0, "cal": 0.0}
             }
-            selected_item = st.selectbox("เลือกรายการยอดนิยม", list(default_foods.keys()))
-            custom_slug = st.text_input("หรือระบุ Path CalForLife (เช่น riec, fried-egg)", value=default_foods[selected_item]["path"])
             
-            c_100 = default_foods[selected_item]["c"]
-            p_100 = default_foods[selected_item]["p"]
-            f_100 = default_foods[selected_item]["f"]
-            cal_100 = default_foods[selected_item]["cal"]
-            suggested_name = selected_item
+            selected_item = st.selectbox("เลือกรายการอาหารยอดนิยม", list(default_foods.keys()))
+            
+            if selected_item != "กำหนดเอง / ระบุ Path เอง":
+                default_slug = default_foods[selected_item]["path"]
+                st.session_state["food_name"] = selected_item
+                st.session_state["c_100"] = default_foods[selected_item]["c"]
+                st.session_state["p_100"] = default_foods[selected_item]["p"]
+                st.session_state["f_100"] = default_foods[selected_item]["f"]
+                st.session_state["cal_100"] = default_foods[selected_item]["cal"]
+            else:
+                default_slug = ""
 
+            custom_slug = st.text_input("ระบุ Path ภาษาอังกฤษจาก calforlife.com/th/calories/[ชื่อตรงนี้]", value=default_slug)
+            
             if st.button("🔄 ดึงข้อมูลสดจาก CalForLife"):
-                res = fetch_nutrition_from_calforlife(custom_slug)
-                if res and (res["calories"] > 0 or res["carbs"] > 0):
-                    c_100, p_100, f_100, cal_100 = res["carbs"], res["protein"], res["fat"], res["calories"]
-                    st.success(f"พบข้อมูล (ต่อ 100g): คาร์บ {c_100}g | โปรตีน {p_100}g | ไขมัน {f_100}g | {cal_100} kcal")
+                if custom_slug:
+                    res = fetch_nutrition_from_calforlife(custom_slug)
+                    if res and (res["calories"] > 0 or res["carbs"] > 0 or res["protein"] > 0):
+                        st.session_state["food_name"] = custom_slug
+                        st.session_state["c_100"] = res["carbs"]
+                        st.session_state["p_100"] = res["protein"]
+                        st.session_state["f_100"] = res["fat"]
+                        st.session_state["cal_100"] = res["calories"]
+                        st.success(f"ดึงสำเร็จ (ต่อ 100g): คาร์บ {res['carbs']}g | โปรตีน {res['protein']}g | ไขมัน {res['fat']}g | {res['calories']} kcal")
+                    else:
+                        st.warning("ดึงข้อมูลไม่สำเร็จ กรุณาตรวจสอบชื่อ Path บนเว็บ calforlife.com")
                 else:
-                    st.warning("ไม่สามารถดึงข้อมูลสดได้ ใช้ค่ามาตรฐานสำรองแทน")
+                    st.warning("กรุณาระบุ Path ก่อนกดค้นหา")
                     
         else:
-            # ค้นหาผ่าน Open Food Facts
-            off_query = st.text_input("พิมพ์ชื่อสินค้า หรือเลขบาร์โค้ด (เช่น meiji protein, dutch mill, tofu san, นมสด)", value="meiji protein")
+            off_query = st.text_input("พิมพ์ชื่อสินค้า หรือเลขบาร์โค้ด (เช่น meiji protein, dutch mill, นมสด)", value="")
             if st.button("🔍 ค้นหา Open Food Facts"):
-                off_results = fetch_nutrition_from_openfoodfacts(off_query)
-                if off_results:
-                    st.session_state["off_results"] = off_results
+                if off_query:
+                    off_results = fetch_nutrition_from_openfoodfacts(off_query)
+                    if off_results:
+                        st.session_state["off_results"] = off_results
+                    else:
+                        st.warning("ไม่พบสินค้าใน Open Food Facts")
                 else:
-                    st.warning("ไม่พบสินค้าใน Open Food Facts")
+                    st.warning("กรุณากรอกคำค้นหา")
 
             if "off_results" in st.session_state and st.session_state["off_results"]:
                 options = {f"{item['name']} ({item['calories']:.0f} kcal / 100g)": item for item in st.session_state["off_results"]}
                 chosen_label = st.selectbox("เลือกสินค้าที่ตรงกัน:", list(options.keys()))
                 chosen_item = options[chosen_label]
-                suggested_name = chosen_item["name"]
-                c_100 = chosen_item["carbs"]
-                p_100 = chosen_item["protein"]
-                f_100 = chosen_item["fat"]
-                cal_100 = chosen_item["calories"]
-                st.info(f"คุณค่าต่อ 100g: คาร์บ {c_100}g | โปรตีน {p_100}g | ไขมัน {f_100}g | {cal_100} kcal")
+                
+                st.session_state["food_name"] = chosen_item["name"]
+                st.session_state["c_100"] = chosen_item["carbs"]
+                st.session_state["p_100"] = chosen_item["protein"]
+                st.session_state["f_100"] = chosen_item["fat"]
+                st.session_state["cal_100"] = chosen_item["calories"]
+                st.info(f"คุณค่าต่อ 100g: คาร์บ {chosen_item['carbs']}g | โปรตีน {chosen_item['protein']}g | ไขมัน {chosen_item['fat']}g | {chosen_item['calories']} kcal")
 
     with col_right:
         st.subheader("2. คำนวณตามน้ำหนักและบันทึก")
+        
+        c_100 = st.session_state["c_100"]
+        p_100 = st.session_state["p_100"]
+        f_100 = st.session_state["f_100"]
+        cal_100 = st.session_state["cal_100"]
+        
         with st.form("add_meal_form", clear_on_submit=True):
             meal_type = st.selectbox("มื้ออาหาร", ["มื้อเช้า", "มื้อกลางวัน", "มื้อเย็น", "ก่อนนอน"])
-            food_name = st.text_input("ชื่ออาหาร", value=suggested_name)
-            weight = st.number_input("ปริมาณอาหาร/เครื่องดื่ม (กรัม หรือ มล.)", min_value=1.0, value=150.0, step=10.0)
+            food_name = st.text_input("ชื่ออาหาร", value=st.session_state["food_name"])
+            weight = st.number_input("ปริมาณอาหาร/เครื่องดื่ม (กรัม หรือ มล.)", min_value=1.0, value=100.0, step=10.0)
 
             ratio = weight / 100.0
             calc_c = round(c_100 * ratio, 1)
