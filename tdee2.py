@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from datetime import date
 import re
 import time
 
@@ -14,7 +13,6 @@ st.set_page_config(page_title="Meal Tracker + BMR/TDEE", page_icon="🍚", layou
 # --- ฟังก์ชันจัดการข้อมูลผ่าน Google Apps Script ---
 def load_data():
     try:
-        # ใส่ timestamp กัน cache และเปิด allow_redirects=True เพื่อแก้ปัญหา Google Redirect 302
         url = f"{APPS_SCRIPT_URL}?t={int(time.time())}"
         res = requests.get(url, allow_redirects=True, timeout=12)
         if res.status_code == 200:
@@ -32,9 +30,11 @@ def load_data():
     return pd.DataFrame(columns=["วันที่", "มื้ออาหาร", "รายการอาหาร", "คาร์บ (g)", "โปรตีน (g)", "ไขมัน (g)", "แคลอรี (kcal)"])
 
 def append_entry(meal, item, weight, carbs, protein, fat, calories):
+    # บันทึกวันที่ตามเวลาประเทศไทย (Asia/Bangkok)
+    bkk_date_str = pd.Timestamp.now(tz="Asia/Bangkok").strftime("%Y-%m-%d")
     payload = {
         "action": "append",
-        "date": str(date.today()),
+        "date": bkk_date_str,
         "meal": meal,
         "item": f"{item} ({weight}g)",
         "carbs": float(carbs),
@@ -172,7 +172,7 @@ with tab1:
             
             if st.form_submit_button("บันทึกลง Google Sheets"):
                 append_entry(meal_type, food_name, weight, calc_c, calc_p, calc_f, calc_cal)
-                time.sleep(1)  # รอ Apps Script เขียนชีตเสร็จ
+                time.sleep(1)  # รอ Apps Script บันทึกข้อมูล
                 st.rerun()
 
 with tab2:
@@ -188,16 +188,23 @@ with tab2:
     else:
         st.dataframe(df, use_container_width=True)
 
-# --- สรุปภาพรวมประจำวันเทียบเป้าหมาย ---
+# --- สรุปภาพรวมประจำวันเทียบเป้าหมาย (รองรับ Timezone ไทย) ---
 st.divider()
 st.subheader("📊 สรุปภาพรวมประจำวันเทียบเป้าหมาย")
 
 if not df.empty and len(df) > 0 and "วันที่" in df.columns:
-    today_str = str(date.today())
+    # 1. แปลงคอลัมน์วันที่และปรับ Timezone เป็นเวลาไทย
+    dates_dt = pd.to_datetime(df["วันที่"], errors="coerce")
+    if dates_dt.dt.tz is not None:
+        dates_bkk = dates_dt.dt.tz_convert("Asia/Bangkok")
+    else:
+        dates_bkk = dates_dt.dt.tz_localize("UTC", ambiguous='NaT', nonexistent='NaT').dt.tz_convert("Asia/Bangkok")
+        
+    df["clean_date"] = dates_bkk.dt.strftime("%Y-%m-%d")
     
-    # แปลงคอลัมน์วันที่เพื่อเช็คเทียบกับวันนี้ (รองรับทั้ง format แบบเต็มและแบบย่อ)
-    df["clean_date"] = df["วันที่"].astype(str).str.slice(0, 10)
-    today_df = df[df["clean_date"] == today_str]
+    # 2. หาวันที่ปัจจุบันตามเวลาไทย (Asia/Bangkok)
+    today_bkk = pd.Timestamp.now(tz="Asia/Bangkok").strftime("%Y-%m-%d")
+    today_df = df[df["clean_date"] == today_bkk]
     
     if not today_df.empty:
         t_cal = today_df["แคลอรี (kcal)"].sum()
@@ -216,7 +223,7 @@ if not df.empty and len(df) > 0 and "วันที่" in df.columns:
         show_cols = [col for col in ["มื้ออาหาร", "รายการอาหาร", "คาร์บ (g)", "โปรตีน (g)", "ไขมัน (g)", "แคลอรี (kcal)"] if col in today_df.columns]
         st.dataframe(today_df[show_cols], use_container_width=True)
     else:
-        st.write(f"ยังไม่มีรายการอาหารที่บันทึกสำหรับวันที่วันนี้ ({today_str})")
+        st.write(f"ยังไม่มีรายการอาหารที่บันทึกสำหรับวันที่วันนี้ ({today_bkk})")
         st.caption("ข้อมูลล่าสุดที่พบล่าสุดในชีต:")
         st.dataframe(df.tail(5), use_container_width=True)
 else:
